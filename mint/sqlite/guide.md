@@ -17,7 +17,7 @@
 ```
 IMPORTANT NOTES:
 ==================================================
- 1. This migration only includes keysets with version >= 0.16 from Nutshell
+ 1. This migration only includes keysets with version >= 0.15 from Nutshell
  2. This migration does NOT include auth tables
  3. The blind_signature table uses 'blinded_message' column (renamed from 'y' in recent CDK versions)
  4. DLEQ proofs (dleq_e, dleq_s) are migrated if available in Nutshell promises

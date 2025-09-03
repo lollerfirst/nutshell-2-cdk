@@ -104,10 +104,10 @@ class NutshellToCDKMigrator:
             logger.warning(f"Invalid version format: {version}, treating as 0.0.0")
             return (0, 0, 0)
     
-    def is_version_gte_016(self, version: str) -> bool:
-        """Check if version is >= 0.16.0."""
+    def is_version_gte_015(self, version: str) -> bool:
+        """Check if version is >= 0.15.0."""
         major, minor, patch = self.parse_version(version)
-        return major > 0 or (major == 0 and minor >= 16)
+        return major > 0 or (major == 0 and minor >= 15)
     
     def parse_derivation_path(self, derivation_path: str) -> Tuple[str, int]:
         """
@@ -159,7 +159,7 @@ class NutshellToCDKMigrator:
     def warn_incompatible_keysets(self) -> int:
         """Warn about Nutshell keysets incompatible with CDK before migration.
         
-        A keyset is considered compatible if its version is >= 0.16.0.
+        A keyset is considered compatible if its version is >= 0.15.0.
         Prints a warning including the keyset id for each incompatible keyset.
         
         Returns:
@@ -179,7 +179,7 @@ class NutshellToCDKMigrator:
         for row in cur.fetchall():
             keyset_id = row["id"]
             version = row["version"]
-            if version is None or not self.is_version_gte_016(version):
+            if version is None or not self.is_version_gte_015(version):
                 incompatible += 1
                 # Exact-style warning message with keyset id included
                 print(f"WARNING: this keyset is incompatible with CDK and therefore won't be migrated! (id={keyset_id})")
@@ -187,7 +187,7 @@ class NutshellToCDKMigrator:
         if incompatible:
             logger.info(f"Found {incompatible} incompatible keyset(s) that will be skipped during migration")
         else:
-            logger.info("All keysets appear compatible (>= 0.16.0)")
+            logger.info("All keysets appear compatible (>= 0.15.0)")
         return incompatible
 
     def migrate_keysets(self) -> int:
@@ -209,7 +209,7 @@ class NutshellToCDKMigrator:
         
         for row in nutshell_cursor.fetchall():
             # Check version requirement
-            if not self.is_version_gte_016(row['version']):
+            if not self.is_version_gte_015(row['version']):
                 logger.debug(f"Skipping keyset {row['id']} with version {row['version']} < 0.16")
                 continue
             
@@ -276,7 +276,7 @@ class NutshellToCDKMigrator:
             keyset_cursor.execute("SELECT version FROM keysets WHERE id = ?", (row['keyset_id'],))
             keyset_row = keyset_cursor.fetchone()
             
-            if not keyset_row or not self.is_version_gte_016(keyset_row['version']):
+            if not keyset_row or not self.is_version_gte_015(keyset_row['version']):
                 continue
             
             # Convert hex strings to blobs for CDK
@@ -345,7 +345,7 @@ class NutshellToCDKMigrator:
             keyset_cursor.execute("SELECT version FROM keysets WHERE id = ?", (row['keyset_id'],))
             keyset_row = keyset_cursor.fetchone()
             
-            if not keyset_row or not self.is_version_gte_016(keyset_row['version']):
+            if not keyset_row or not self.is_version_gte_015(keyset_row['version']):
                 continue
             
             # Generate random y if not available, then convert to blob
@@ -415,7 +415,7 @@ class NutshellToCDKMigrator:
             keyset_cursor.execute("SELECT version FROM keysets WHERE id = ?", (row['keyset_id'],))
             keyset_row = keyset_cursor.fetchone()
             
-            if not keyset_row or not self.is_version_gte_016(keyset_row['version']):
+            if not keyset_row or not self.is_version_gte_015(keyset_row['version']):
                 continue
             
             # Convert hex strings to blobs for CDK
@@ -748,7 +748,7 @@ class NutshellToCDKMigrator:
         migrateable_keysets = 0
         missing_keysets = []
         for row in nutshell_cursor.fetchall():
-            if self.is_version_gte_016(row['version']):
+            if self.is_version_gte_015(row['version']):
                 migrateable_keysets += 1
                 if row['id'] not in cdk_keysets:
                     missing_keysets.append(row['id'])
@@ -779,7 +779,7 @@ class NutshellToCDKMigrator:
         migrateable_spent = 0
         missing_spent = []
         for row in nutshell_cursor.fetchall():
-            if self.is_version_gte_016(row['version']):
+            if self.is_version_gte_015(row['version']):
                 migrateable_spent += 1
                 proof_key = (row['secret'], row['keyset_id'])
                 if proof_key not in cdk_spent_proofs:
@@ -811,7 +811,7 @@ class NutshellToCDKMigrator:
         migrateable_pending = 0
         missing_pending = []
         for row in nutshell_cursor.fetchall():
-            if self.is_version_gte_016(row['version']):
+            if self.is_version_gte_015(row['version']):
                 migrateable_pending += 1
                 proof_key = (row['secret'], row['keyset_id'])
                 if proof_key not in cdk_pending_proofs:
@@ -843,7 +843,7 @@ class NutshellToCDKMigrator:
         migrateable_promises = 0
         missing_promises = []
         for row in nutshell_cursor.fetchall():
-            if self.is_version_gte_016(row['version']):
+            if self.is_version_gte_015(row['version']):
                 # Convert hex to blob to match CDK format
                 blinded_message_blob = self.hex_to_blob(row['b_'])
                 if blinded_message_blob:
@@ -1093,7 +1093,7 @@ def main():
         print("\nIMPORTANT NOTES:")
         print("=" * 50)
         notes = [
-            "This migration only includes keysets with version >= 0.16 from Nutshell",
+            "This migration only includes keysets with version >= 0.15 from Nutshell",
             "This migration does NOT include auth tables",
             "The blind_signature table uses 'blinded_message' column (renamed from 'y' in recent CDK versions)",
             "DLEQ proofs (dleq_e, dleq_s) are migrated if available in Nutshell promises",
