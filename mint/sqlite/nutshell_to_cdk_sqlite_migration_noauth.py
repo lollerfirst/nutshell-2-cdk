@@ -276,6 +276,8 @@ class NutshellToCDKMigrator:
             keyset_cursor.execute("SELECT version FROM keysets WHERE id = ?", (row['keyset_id'],))
             keyset_row = keyset_cursor.fetchone()
             
+            # Convert hex strings to blobs for CDK
+
             if not keyset_row or not self.is_version_gte_015(keyset_row['version']):
                 continue
             
@@ -521,24 +523,107 @@ class NutshellToCDKMigrator:
         logger.info(f"Migrated {migrated_count} mint quotes")
         return migrated_count
     
-    def migrate_melt_quotes(self) -> int:
-        """Migrate melt quotes from Nutshell to CDK format."""
-        logger.info("Migrating melt quotes...")
-        
-        nutshell_cursor = self.nutshell_conn.cursor()
-        nutshell_cursor.execute("""
+    
+
+    def _select_melt_quotes_to_migrate(self) -> Tuple[List[sqlite3.Row], List[Dict[str, Any]]]:
+        """
+        Select melt quotes to migrate, deduplicating by checking_id (payment lookup id).
+        Rules per checking_id group:
+        - If any quote is PAID, pick the PAID one with the latest paid_time (fallback created_time).
+        - Otherwise (all unpaid/pending), pick the latest by created_time.
+        - Quotes with NULL/empty checking_id are treated as unique (no grouping).
+
+        Returns:
+            (selected_rows, duplicates_info)
+            - selected_rows: rows to migrate
+            - duplicates_info: list of dicts describing groups where duplicates were found
+        """
+        cur = self.nutshell_conn.cursor()
+        cur.execute(
+            """
             SELECT quote, unit, amount, request, fee_reserve, created_time, state,
                    proof, checking_id, paid_time, method
             FROM melt_quotes
-        """)
-        
+            """
+        )
+        rows = cur.fetchall()
+
+        def norm_state(s: Optional[str]) -> str:
+            return (s or "").strip().upper()
+
+        # Group by checking_id (with special handling for null/empty)
+        groups: Dict[Any, List[sqlite3.Row]] = {}
+        for r in rows:
+            chk = r["checking_id"]
+            if chk is None or str(chk).strip() == "":
+                key = ("__no_lookup__", r["quote"])  # unique per quote
+            else:
+                key = chk
+            groups.setdefault(key, []).append(r)
+
+        selected: List[sqlite3.Row] = []
+        duplicates_info: List[Dict[str, Any]] = []
+
+        for key, gr in groups.items():
+            # Unique group or no-lookup special key
+            if len(gr) == 1 or (isinstance(key, tuple) and key[0] == "__no_lookup__"):
+                selected.append(gr[0])
+                continue
+
+            paid_rows = [r for r in gr if norm_state(r["state"]) == "PAID"]
+
+            if paid_rows:
+                # Choose latest PAID by paid_time (fallback created_time)
+                def paid_sort_key(r: sqlite3.Row):
+                    pt = r["paid_time"] if r["paid_time"] is not None else r["created_time"]
+                    try:
+                        return int(pt)
+                    except Exception:
+                        return 0
+                chosen = sorted(paid_rows, key=paid_sort_key)[-1]
+            else:
+                # All unpaid/pending: choose latest by created_time
+                def created_sort_key(r: sqlite3.Row):
+                    try:
+                        return int(r["created_time"])
+                    except Exception:
+                        return 0
+                chosen = sorted(gr, key=created_sort_key)[-1]
+
+            selected.append(chosen)
+
+            checking_id = gr[0]["checking_id"]
+            skipped = [r["quote"] for r in gr if r["quote"] != chosen["quote"]]
+            duplicates_info.append({
+                "checking_id": checking_id,
+                "chosen_quote": chosen["quote"],
+                "skipped_quotes": skipped,
+                "group_size": len(gr),
+            })
+
+        return selected, duplicates_info
+
+    def migrate_melt_quotes(self) -> int:
+        """Migrate melt quotes from Nutshell to CDK format with deduplication by checking_id."""
+        logger.info("Migrating melt quotes...")
+
+        rows, duplicates_info = self._select_melt_quotes_to_migrate()
+
+        # Log warnings about duplicates that will be skipped
+        for info in duplicates_info:
+            print(
+                "WARNING: Multiple melt quotes share the same payment lookup id "
+                f"(checking_id={info['checking_id']}). Migrating quote {info['chosen_quote']} "
+                f"and skipping {info['skipped_quotes']}"
+            )
+
         migrated_count = 0
         cdk_cursor = self.cdk_conn.cursor()
-        
-        for row in nutshell_cursor.fetchall():
+
+        for row in rows:
             created_time = int(row['created_time'])
             expiry_time = created_time + 157784760  # + 5 years from creation
-            
+
             quote_data = {
                 'id': row['quote'],
                 'unit': row['unit'] or 'sat',
@@ -546,42 +631,45 @@ class NutshellToCDKMigrator:
                 'request': row['request'],
                 'fee_reserve': row['fee_reserve'] or 0,
                 'expiry': expiry_time,
-                'state': row['state'],
+                'state': (row['state'] or '').upper(),
                 'payment_preimage': row['proof'],  # Nutshell 'proof' maps to CDK 'payment_preimage'
                 'request_lookup_id': row['checking_id'],
                 'created_time': created_time,
                 'paid_time': row['paid_time'] if row['paid_time'] else None,
-                'payment_method': row['method'] or 'bolt11',
+                'payment_method': (row['method'] or 'BOLT11').upper(),
                 'options': None,
                 'request_lookup_id_kind': 'payment_hash'
             }
-            
+
             try:
-                cdk_cursor.execute("""
+                cdk_cursor.execute(
+                    """
                     INSERT OR IGNORE INTO melt_quote (
                         id, unit, amount, request, fee_reserve, expiry, state,
                         payment_preimage, request_lookup_id, created_time, paid_time,
                         payment_method, options, request_lookup_id_kind
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    quote_data['id'], quote_data['unit'], quote_data['amount'],
-                    quote_data['request'], quote_data['fee_reserve'], quote_data['expiry'],
-                    quote_data['state'], quote_data['payment_preimage'],
-                    quote_data['request_lookup_id'], quote_data['created_time'],
-                    quote_data['paid_time'], quote_data['payment_method'],
-                    quote_data['options'], quote_data['request_lookup_id_kind']
-                ))
-                
+                    """,
+                    (
+                        quote_data['id'], quote_data['unit'], quote_data['amount'],
+                        quote_data['request'], quote_data['fee_reserve'], quote_data['expiry'],
+                        quote_data['state'], quote_data['payment_preimage'],
+                        quote_data['request_lookup_id'], quote_data['created_time'],
+                        quote_data['paid_time'], quote_data['payment_method'],
+                        quote_data['options'], quote_data['request_lookup_id_kind']
+                    )
+                )
+
                 if cdk_cursor.rowcount > 0:
                     migrated_count += 1
-                
+
             except sqlite3.Error as e:
                 logger.error(f"Failed to migrate melt quote {row['quote']}: {e}")
-        
+
         self.cdk_conn.commit()
         logger.info(f"Migrated {migrated_count} melt quotes")
         return migrated_count
-    
+
     def create_mint_quote_payments(self) -> int:
         """Create mint quote payment records for paid quotes."""
         logger.info("Creating mint quote payment records...")
@@ -891,20 +979,16 @@ class NutshellToCDKMigrator:
         for row in cdk_cursor.fetchall():
             cdk_melt_quotes.add(row['id'])
         
-        # Check all Nutshell melt quotes exist in CDK
-        nutshell_cursor.execute("SELECT quote FROM melt_quotes")
-        nutshell_melt_quotes = set()
-        missing_melt_quotes = []
-        for row in nutshell_cursor.fetchall():
-            nutshell_melt_quotes.add(row['quote'])
-            if row['quote'] not in cdk_melt_quotes:
-                missing_melt_quotes.append(row['quote'])
+        # Determine which Nutshell melt quotes should have been migrated (dedup by checking_id)
+        selected_rows, _dup_info = self._select_melt_quotes_to_migrate()
+        expected_melt_ids = {r['quote'] for r in selected_rows}
+        missing_melt_quotes = [qid for qid in expected_melt_ids if qid not in cdk_melt_quotes]
         
         melt_quotes_verified = len(missing_melt_quotes) == 0
-        verification_results.append(("Melt Quotes", len(nutshell_melt_quotes), len(cdk_melt_quotes), melt_quotes_verified))
+        verification_results.append(("Melt Quotes", len(expected_melt_ids), len(cdk_melt_quotes), melt_quotes_verified))
         if not melt_quotes_verified:
             all_verified = False
-            logger.error(f"Missing melt quotes in CDK: {len(missing_melt_quotes)} out of {len(nutshell_melt_quotes)}")
+            logger.error(f"Missing melt quotes in CDK: {len(missing_melt_quotes)} out of {len(expected_melt_ids)}")
         
         # Verification 7: Mint Quote Payments
         logger.info("Verifying mint quote payments migration...")
@@ -1099,6 +1183,7 @@ def main():
             "DLEQ proofs (dleq_e, dleq_s) are migrated if available in Nutshell promises",
             "Derivation paths are split: base path goes to 'derivation_path', counter goes to 'derivation_path_index'",
             "Please verify the migrated data before using it in production",
+            "If multiple Nutshell melt quotes share the same payment lookup id (checking_id), the migrator will: pick a PAID one if present (latest by paid_time), otherwise pick the latest by created_time; the rest will be skipped and listed as warnings.",
         ]
         
         for i, note in enumerate(notes, 1):
