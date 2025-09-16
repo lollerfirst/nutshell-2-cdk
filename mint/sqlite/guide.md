@@ -7,8 +7,8 @@
 
 ### Preparations
 
-1. In the `config.toml`, under the \[info\] section, set `seed` to your `MINT_PRIVATE_KEY` value used for Nutshell. Alternatively you  could set the `CDK_MINTD_SEED` environment variable.
-2. The sqlite database for your  `mintd` Mint has to exist, therefore run `mintd` with the sqlite engine configuration at least once.
+1. In the `config.toml`, under the \[info\] section, set `seed` to your `MINT_PRIVATE_KEY` value used for Nutshell. Alternatively you  could set the `CDK_MINTD_SEED` environment variable.  For migrated mints, you do not need the mnemonic key in config.toml.
+2. The sqlite database for your  `cdk-mintd` Mint has to exist, therefore run `cdk-mintd` with the sqlite engine configuration at least once.  By default, this will create cdk-mintd.sqlite.
 
 ### Run the script
 
@@ -43,7 +43,7 @@ Detailed Statistics:
 ==================================================
 
 Keysets by unit:
-  auth: 1 total, 1 active
+  auth: 1 total, 1 active 
   msat: 1 total, 1 active
   sat: 2 total, 2 active
   usd: 1 total, 1 active
@@ -58,9 +58,11 @@ Melt quotes by state:
 Would you like to run verification of the migration? [Y/n]: Y
 ```
 
-4. If the verification suceeded, your DB is ready.
+4. If the verification succeeded, your migrated database is ready.
 ```
 --------------------------------------------------------------------------------
 Overall Status: ✓ ALL VERIFIED
 
 ```
+5. Start the cdk-mintd and smoketest funcitonlaity such as send, receive, mint, melt, and checking transaciton histories.
+   
